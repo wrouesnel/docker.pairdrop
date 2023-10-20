@@ -1,0 +1,16 @@
+#!/bin/bash
+
+log() {
+  echo "$*" 1>&2
+}
+
+fatal() {
+  echo "$*" 1>&2
+  exit 1
+}
+
+[ ! -e /run/log/pairdrop ] && mkfifo /run/log/pairdrop
+
+cd /srv/pairdrop || fatal "Could not enter /srv/pairdrop"
+
+exec npm start  > /run/log/pairdrop 2>&1

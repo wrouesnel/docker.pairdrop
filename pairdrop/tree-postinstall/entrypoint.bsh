@@ -1,0 +1,188 @@
+#!/bin/bash
+
+function fatal() {
+    local exit_code
+    exit_code=$1
+    echo "$*" 1>&2
+    exit "$exit_code"
+}
+
+
+function log() {
+    echo "$@"
+}
+
+function echoerr() {
+    echo "$@" 1>&2
+}
+
+function genpassword() {
+    echo $(pwgen 48 1)
+}
+
+function stdbool() {
+    if [ -z "$1" ] ; then
+        echo "n"
+    else
+        echo "${1:0:1}" | tr "[:upper:]" "[:lower:]"
+    fi
+}
+
+# Reads the given environment variable name, detects if its a file and templates
+# it out to the given output file path. Optionally allows the process to be skipped
+# if the value is blank.
+# Usage: handle_file_input_envvar <options> ENVVAR OUTFILE
+# Valid options: --can-disable --allow-blank --append
+function handle_file_input_envvar() {
+    local can_disable allow_blank do_append
+
+    while true; do
+        case $1 in
+        --can-disable) can_disable=y ; shift ;;
+        --allow-blank) allow_blank=y ; shift ;;
+        --append) do_append=y ; shift ;;
+        *)
+            if [ "${1:0:2}" != "--" ] ; then
+                break
+            else  
+                log "handle_file_input_envvar: Unknown option received: $1"
+                exit 1
+            fi
+            ;;
+        esac
+    done
+
+    local envvar="$1"
+    local outfile="$2"
+    
+    # Sanity checks
+    if [ "$#" -ne 2 ] ; then
+        log "handle_file_input_envvar: Got $# arguments, expected 2."
+        exit 1
+    fi
+    
+    eval local envval="\$$envvar"
+
+    if [ "${can_disable}" = "y" ] && [ "${envval}" = "disabled" ] ; then
+        log "$envvar disabled by user requested."
+        return
+    elif [ "${envval}" = "disabled" ] ; then
+        log "$envvar is set to \"disabled\" but this value is mandatory."
+        exit 1
+    fi
+    
+    if [ -z "${envval}" ] && [ "y" != "${allow_blank}" ]; then
+        log "$envvar is blank instead of being explicitly disabled and must contain a value."
+        exit 1
+    fi
+    
+    if [ "${envval:0:1}" = "/" ] ; then
+        log "$envvar is path."
+        if [ ! -e "$envval" ] ; then
+            log "$envval does not exist."
+            exit 1
+        fi
+        
+        if [ "$do_append" = "y" ] ; then
+            cat "$envval" >> "$outfile"
+        else
+            cat "$envval" > "$outfile"
+        fi
+    else
+        log "$envvar is literal."
+
+        if [ "$do_append" = "y" ] ; then
+            echo -n "$envval" >> "$outfile"
+        else
+            echo -n "$envval" > "$outfile"
+        fi
+    fi
+}
+
+if [ -z "$HOSTNAME" ] ; then
+    HOSTNAME="$(hostname -f)"
+fi
+
+log "Starting up with hostname: $HOSTNAME"
+
+export DATA_DIR=/data
+
+log "Ensuring persistent data status..."
+if ! mountpoint ${DATA_DIR}; then
+    if [ "$(stdbool "$DEV_ALLOW_EPHEMERAL_DATA")" = "y" ]; then
+        echoerr "WARNING: allowing an ephemeral data directory."
+        mkdir -m 755 -p "$DATA_DIR"
+
+    else
+        echoerr "DATA_DIR is not a mountpoint. Refusing to run with ephemeral data directory."
+        exit 1
+    fi
+fi
+
+chown root:root ${DATA_DIR}
+chmod 0755 ${DATA_DIR}
+
+if [ -z "${SSL_SERVER_CERT}" ] && [ -z "${SSL_SERVER_KEY}" ] ; then
+   if [ "$(stdbool $DEV_ALLOW_SELF_SIGNED)" != "y" ] ; then
+       echoerr "SSL_SERVER_CERT and SSL_SERVER_KEY are blank but self-signed certificates are not allowed."    
+       exit 1
+   fi
+   
+   log "SSL_SERVER_CERT and SSL_SERVER_KEY are blank. Generating self-signed certificate."
+   log "SSL_CERTCHAIN will be ignored."
+   SSL_CERTCHAIN=""
+   openssl req -x509 -newkey rsa:4096 \
+       -keyout /run/generated.pem \
+       -out /run/generated.crt \
+       -days 3065 -nodes \
+       -subj "/CN=$HOSTNAME"
+   if [ $? != 0 ]; then
+       echoerr "Self-signed certificate generation failed."
+       exit 1
+   fi
+   export SSL_SERVER_CERT=/run/generated.crt
+   export SSL_SERVER_KEY=/run/generated.pem
+fi
+
+if [ -z "${SSL_SERVER_CERT}" ] ; then
+   log "SSL_SERVER_CERT is blank but other SSL fields are not. This is invalid."
+   exit 1
+fi
+
+if [ -z "${SSL_SERVER_KEY}" ] ; then
+   log "SSL_SERVER_KEY is blank but other SSL fields are not. This is invalid."
+   exit 1
+fi
+
+log "Enabling NVM environment"
+source "${NVM_DIR}/nvm.sh"
+nvm use default || fatal 1 "Failed to set NodeJS environment"
+
+handle_file_input_envvar                SSL_SERVER_CERT         /run/nginx-cert.crt
+handle_file_input_envvar --append --allow-blank SSL_SERVER_CERTCHAIN    /run/nginx-cert.crt
+handle_file_input_envvar                SSL_SERVER_KEY          /run/nginx-key.pem
+
+log "Templating nginx configuration..."
+p2 -t /etc/nginx/nginx.conf.p2 -o /run/nginx.conf || fatal 1 "Templating nginx config failed."
+chmod 644 /run/nginx.conf
+log "Templating syslog-ng configuration..."
+export SERVICES="$(ls -1 /etc/services | tr '\n' ' ') nginx-access nginx-error"
+p2 -t /etc/syslog-ng.conf.p2 -o /run/syslog-ng.conf || fatal 1 "Templating syslog-ng config failed."
+chmod 644 /run/syslog-ng.conf
+
+log "Create logging fifo directory"
+mkdir -p /run/log
+
+log "Create nginx cache directory"
+mkdir -p /tmp/nginx
+chown root:www-data /tmp/nginx
+chmod 770 /tmp/nginx
+
+# This structure ensures we can CTRL+C on the desktop.
+cp -af /etc/services /run/services
+runsvdir "$SVDIR" &
+PID=$!
+trap "kill -TERM $PID" INT TERM
+wait $PID
+wait $PID
+exit $?
