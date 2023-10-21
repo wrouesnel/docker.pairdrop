@@ -13,4 +13,10 @@ fatal() {
 
 cd /srv/pairdrop || fatal "Could not enter /srv/pairdrop"
 
-exec npm start  > /run/log/pairdrop 2>&1
+if [ "${WS_FALLBACK}" = "true" ]; then
+  exec node index.js --include-ws-fallback > /run/log/pairdrop 2>&1
+else
+  exec node index.js  > /run/log/pairdrop 2>&1
+fi
+
+
