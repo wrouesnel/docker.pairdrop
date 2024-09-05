@@ -3,7 +3,7 @@ ARG DOCKER_PREFIX=
 FROM ${DOCKER_PREFIX}ubuntu:22.04
 
 ARG URL_P2CLI=https://github.com/wrouesnel/p2cli/releases/download/r16/p2cli_r16_linux-amd64.tar.gz
-ARG URL_PAIRDROP=https://github.com/schlagmichdoch/PairDrop/archive/refs/tags/v1.9.1.tar.gz
+ARG URL_PAIRDROP=https://github.com/schlagmichdoch/PairDrop/archive/refs/tags/v1.10.10.tar.gz
 ARG URL_NVM=https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh
 
 ARG http_proxy=
